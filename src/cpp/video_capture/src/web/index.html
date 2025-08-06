@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>视频采集控制台</title>
+    <link rel="stylesheet" href="static/style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>视频采集控制台</h1>
+        
+        <div class="video-container">
+            <img id="video-stream" src="/video_feed" alt="Video Stream">
+        </div>
+        
+        <div class="controls">
+            <div class="control-group">
+                <h3>采集控制</h3>
+                <button id="pause-btn">暂停</button>
+                <button id="resume-btn">恢复</button>
+            </div>
+            
+            <div class="control-group">
+                <h3>分辨率设置</h3>
+                <input type="number" id="width" placeholder="宽度" value="640">
+                <input type="number" id="height" placeholder="高度" value="480">
+                <button id="set-resolution-btn">设置分辨率</button>
+            </div>
+            
+            <div class="control-group">
+                <h3>帧率设置</h3>
+                <input type="number" id="fps" placeholder="帧率" value="30">
+                <button id="set-fps-btn">设置帧率</button>
+            </div>
+            
+            <div class="control-group">
+                <h3>状态信息</h3>
+                <div id="status-info"></div>
+            </div>
+        </div>
+    </div>
+    
+    <script src="static/script.js"></script>
+</body>
+</html>

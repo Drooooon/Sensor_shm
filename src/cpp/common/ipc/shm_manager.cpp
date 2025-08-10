@@ -519,51 +519,6 @@ ShmStatus ShmManager::internal_commit_write_buffer(uint32_t buffer_idx,
   return ShmStatus::Success;
 }
 
-const void *ShmManager::internal_acquire_read_buffer(size_t *data_size,
-                                                     uint64_t *frame_version,
-                                                     uint64_t *timestamp_us,
-                                                     uint32_t *buffer_idx,
-                                                     ShmStatus *status) {
-  std::lock_guard<std::mutex> lock(state_mutex_);
-  *status = ShmStatus::Success;
-  auto *control = static_cast<ShmBufferControl *>(shm_ptr_);
-  if (!control || (state_ != ShmState::Created && state_ != ShmState::Mapped)) {
-    *status = ShmStatus::NotInitialized;
-    return nullptr;
-  }
-
-  // *** Bug 修复：寻找最新帧的逻辑 ***
-  uint32_t latest_idx = -1;
-  uint64_t max_version = 0;
-
-  for (uint32_t i = 0; i < NUM_BUFFERS; ++i) {
-    if (control->buffer_ready[i].load(std::memory_order_acquire)) {
-      uint64_t current_version =
-          control->frame_version[i].load(std::memory_order_acquire);
-      if (latest_idx == (uint32_t)-1 || current_version > max_version) {
-        max_version = current_version;
-        latest_idx = i;
-      }
-    }
-  }
-
-  if (latest_idx == (uint32_t)-1) {
-    *status = ShmStatus::NoDataAvailable;
-    return nullptr;
-  }
-
-  control->buffer_reader_count[latest_idx].fetch_add(1,
-                                                     std::memory_order_acquire);
-  *buffer_idx = latest_idx;
-  *data_size =
-      control->buffer_data_size[latest_idx].load(std::memory_order_acquire);
-  *timestamp_us =
-      control->timestamp_us[latest_idx].load(std::memory_order_acquire);
-  *frame_version = max_version;
-
-  return get_data_buffer(latest_idx);
-}
-
 void ShmManager::internal_release_read_buffer(uint32_t buffer_idx) {
   std::lock_guard<std::mutex> lock(state_mutex_);
   if (state_ != ShmState::Created && state_ != ShmState::Mapped)

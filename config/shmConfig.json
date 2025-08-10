@@ -1,0 +1,7 @@
+{
+  "shared_memory": {
+    "name": "yuyv_shm",
+    "total_size_mb": 32,
+    "buffer_size_mb": 10
+  }
+}

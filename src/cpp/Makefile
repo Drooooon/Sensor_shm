@@ -20,8 +20,11 @@ LIBS = $(shell pkg-config --libs opencv4) -lrt
 LIB_SRCS = \
     common/ipc/shm_manager.cpp \
     config/config_manager.cpp \
+    config/factory.cpp \
     video/image_shm_manager.cpp \
-    video/formats/yuyv_processor.cpp
+    video/formats/v4l2_capture.cpp \
+    video/formats/yuyv_decoder.cpp \
+    video/formats/mjpg_decoder.cpp
 
 # b. 主程序源文件 (每个都有 main 函数)
 PRODUCER_APP_SRC = video/test/producer_process.cpp

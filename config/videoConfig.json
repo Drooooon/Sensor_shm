@@ -1,8 +1,8 @@
 {
   "v4l2_capture": {
     "device_path": "/dev/video0",
-    "width": 640,
-    "height": 480,
+    "width": 1280,
+    "height": 720,
     "format": "YUYV",
     "buffer_count": 4
   }

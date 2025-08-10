@@ -294,25 +294,26 @@ ReadBufferGuard ShmManager::acquire_read_buffer() {
 }
 
 // ========== 兼容性接口实现（内部使用零拷贝实现）==========
-ShmStatus ShmManager::write_and_switch(const void *data, size_t size, uint64_t frame_version) {
-  if (!data || size == 0) return ShmStatus::InvalidArguments;
-  
+ShmStatus ShmManager::write_and_switch(const void *data, size_t size,
+                                       uint64_t frame_version) {
+  if (!data || size == 0)
+    return ShmStatus::InvalidArguments;
+
   WriteBufferGuard guard = acquire_write_buffer(size);
   if (!guard.is_valid()) {
-      // 在单写者模型中，可以简单返回错误，而不是忙等
-      return ShmStatus::AcquireFailed;
+    // 在单写者模型中，可以简单返回错误，而不是忙等
+    return ShmStatus::AcquireFailed;
   }
-  
+
   std::memcpy(guard.get(), data, size);
-  
-  uint64_t current_timestamp = 
+
+  uint64_t current_timestamp =
       std::chrono::duration_cast<std::chrono::microseconds>(
-          std::chrono::system_clock::now().time_since_epoch()
-      ).count();
-      
+          std::chrono::system_clock::now().time_since_epoch())
+          .count();
+
   return guard.commit(size, frame_version, current_timestamp);
 }
-
 
 ShmStatus ShmManager::try_read_latest(void *data, size_t max_size,
                                       size_t *actual_size) {
@@ -653,14 +654,15 @@ int shm_manager_commit_write_buffer(void *manager_ptr, void *buffer_ptr,
   auto it = write_guards.find(buffer_ptr);
   if (it == write_guards.end())
     return static_cast<int>(ShmStatus::InvalidArguments);
-  
+
   // 生成当前时间戳
-  uint64_t current_timestamp = 
+  uint64_t current_timestamp =
       std::chrono::duration_cast<std::chrono::microseconds>(
-          std::chrono::system_clock::now().time_since_epoch()
-      ).count();
-      
-  ShmStatus status = it->second->commit(actual_size, frame_version, current_timestamp);
+          std::chrono::system_clock::now().time_since_epoch())
+          .count();
+
+  ShmStatus status =
+      it->second->commit(actual_size, frame_version, current_timestamp);
   write_guards.erase(it); // Guard自动析构，完成提交
   return static_cast<int>(status);
 }

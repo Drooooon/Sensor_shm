@@ -1,1 +1,19 @@
-third_party/
+# 编译产物
+*.o
+*.so
+*.a
+*.exe
+*.out
+
+# build 目录
+build/
+
+# Python 缓存
+__pycache__/
+*.pyc
+
+# VSCode 配置
+.vscode/
+
+# 其他临时文件
+*.log

@@ -1,6 +1,21 @@
-// ==========================================================
-//      src/cpp/video/test/consumer_gui.cpp (最终动态版)
-// ==========================================================
+/**
+ * @file consumer_gui.cpp
+ * @brief 视频消费者GUI程序
+ * @author SensorComm Team
+ * @date 2025-08-11
+ * @version 1.0
+ *
+ * 该程序作为视频数据的消费者，从共享内存读取视频帧数据，
+ * 解码并显示在OpenCV窗口中。支持动态格式切换和实时性能监控。
+ *
+ * 主要功能：
+ * - 连接共享内存并读取图像数据
+ * - 动态选择合适的解码器
+ * - 实时视频显示和性能统计
+ * - 支持多种图像格式的无缝切换
+ * - 优雅的错误处理和资源清理
+ */
+
 #include "config/config_manager.h"
 #include "config/factory.h"
 #include "video/image_shm_manager.h"
@@ -26,14 +41,14 @@ int main() {
     ImageShmManager shm_transport(shm_config.name);
     std::cout << "ConsumerGUI: Waiting for producer to create shared memory..."
               << std::endl;
-    while (shm_transport.open_and_map(shm_config.total_size_bytes,
-                                      shm_config.buffer_size_bytes) !=
-           ShmStatus::Success) {
+    while (shm_transport.open_and_map(
+               shm_config.total_size_bytes, shm_config.buffer_size_bytes,
+               shm_config.buffer_count) != ShmStatus::Success) {
       std::cout << "ConsumerGUI: Waiting..." << std::endl;
       std::this_thread::sleep_for(std::chrono::seconds(1));
     }
-    std::cout << "ConsumerGUI: Successfully connected to shared memory!"
-              << std::endl;
+    std::cout << "ConsumerGUI: Successfully connected to shared memory with "
+              << shm_config.buffer_count << " buffers!" << std::endl;
 
     // 3. 创建解码器 Map - 支持动态格式切换
     std::map<ImageFormat, std::unique_ptr<IDecoder>> decoders;

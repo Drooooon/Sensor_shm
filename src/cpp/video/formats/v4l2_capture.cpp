@@ -1,6 +1,15 @@
-// ==========================================================
-//    src/cpp/video/formats/v4l2_capture.cpp (Factory Pattern版)
-// ==========================================================
+/**
+ * @file v4l2_capture.cpp
+ * @brief V4L2视频设备捕获器实现
+ * @author SensorComm Team
+ * @date 2025-08-11
+ * @version 1.0
+ *
+ * 实现基于Linux V4L2（Video for Linux 2）API的视频捕获功能。
+ * 提供完整的设备初始化、内存映射、流控制和帧捕获功能。
+ * 使用RAII模式确保资源的自动管理和异常安全。
+ */
+
 #include "v4l2_capture.h"
 #include "config/config_manager.h"
 

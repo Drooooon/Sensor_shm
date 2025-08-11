@@ -1,3 +1,14 @@
+/**
+ * @file image_shm_manager.cpp
+ * @brief 图像共享内存管理器实现文件
+ * @author SensorComm Team
+ * @date 2025-08-11
+ * @version 1.0
+ *
+ * 实现图像共享内存管理器的核心功能，提供图像特定的
+ * 数据写入和读取操作，自动处理图像头部和数据的组织。
+ */
+
 #include "image_shm_manager.h"
 #include <chrono>
 #include <cstring>

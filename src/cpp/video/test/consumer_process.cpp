@@ -8,8 +8,6 @@
 #include <thread>
 #include <vector>
 
-
-
 int main() {
   std::cout << "=== Video Consumer (Final Verification: File Save Mode) ==="
             << std::endl;
@@ -25,7 +23,7 @@ int main() {
   std::cout << "Consumer: Waiting for producer..." << std::endl;
 
   // 初次连接
-  while (yuyv_shm.open_and_map(32 * 1024 * 1024, 10 * 1024 * 1024) !=
+  while (yuyv_shm.open_and_map(32 * 1024 * 1024, 10 * 1024 * 1024, 3) !=
          ShmStatus::Success) {
     std::cout << "Consumer: Waiting for shared memory..." << std::endl;
     std::this_thread::sleep_for(std::chrono::seconds(1));
@@ -79,7 +77,7 @@ int main() {
                status == ShmStatus::ShmOpenFailed) {
       std::cerr << "Consumer: SHM disconnected, trying to reconnect..."
                 << std::endl;
-      while (yuyv_shm.open_and_map(32 * 1024 * 1024, 10 * 1024 * 1024) !=
+      while (yuyv_shm.open_and_map(32 * 1024 * 1024, 10 * 1024 * 1024, 3) !=
              ShmStatus::Success) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
       }

@@ -2,8 +2,8 @@
  * @file shm_manager.cpp
  * @author Dron
  * @brief 零拷贝共享内存管理器实现
- * @version 0.5
- * @date 2025-08-05
+ * @version 0.6
+ * @date 2025-08-10
  *
  * @copyright Copyright (c) 2025
  *
@@ -20,8 +20,6 @@
 #include <thread>
 #include <unistd.h>
 #include <unordered_map>
-
-// 移除重复定义，使用 shm_types.h 中的 NUM_BUFFERS
 
 // 全局存储用于管理Guard对象的生命周期
 static std::mutex guard_map_mutex;
@@ -134,30 +132,42 @@ void ShmManager::close_internal_handles() {
   }
 }
 
+// 计算所需的共享内存大小的静态辅助函数
+static size_t calculate_required_shm_size(uint32_t buffer_count,
+                                          size_t buffer_size) {
+  return ShmBufferControl::get_data_buffers_offset(buffer_count) +
+         buffer_count * buffer_size;
+}
+
 ShmStatus ShmManager::validate_buffer_layout(size_t shm_total_size,
-                                             size_t buffer_size) const {
-  size_t required_size = sizeof(ShmBufferControl) + NUM_BUFFERS * buffer_size;
+                                             size_t buffer_size,
+                                             uint32_t buffer_count) const {
+  size_t required_size = calculate_required_shm_size(buffer_count, buffer_size);
   if (shm_total_size < required_size) {
-    log_error("Shared memory size too small for buffer layout",
+    log_error("Shared memory size too small. Required: " +
+                  std::to_string(required_size) +
+                  ", Provided: " + std::to_string(shm_total_size),
               ShmStatus::BufferTooSmall);
     return ShmStatus::BufferTooSmall;
   }
   return ShmStatus::Success;
 }
 
-ShmStatus ShmManager::create_and_init(size_t shm_total_size,
-                                      size_t buffer_size) {
+ShmStatus ShmManager::create_and_init(size_t shm_total_size, size_t buffer_size,
+                                      uint32_t buffer_count) {
   std::lock_guard<std::mutex> lock(state_mutex_);
   if (state_ != ShmState::Uninitialized) {
     log_error("Shared memory already initialized",
               ShmStatus::AlreadyInitialized);
     return ShmStatus::AlreadyInitialized;
   }
+
   ShmStatus validation_result =
-      validate_buffer_layout(shm_total_size, buffer_size);
+      validate_buffer_layout(shm_total_size, buffer_size, buffer_count);
   if (validation_result != ShmStatus::Success) {
     return validation_result;
   }
+
   shm_fd_ = shm_open(shm_name_.c_str(), O_CREAT | O_EXCL | O_RDWR, 0666);
   bool shm_newly_created = false;
   if (shm_fd_ == -1) {
@@ -187,8 +197,9 @@ ShmStatus ShmManager::create_and_init(size_t shm_total_size,
     }
     std::cout << "ShmManager '" << shm_name_
               << "': Created new shared memory with size " << shm_total_size
-              << " bytes." << std::endl;
+              << " bytes, " << buffer_count << " buffers." << std::endl;
   }
+
   shm_ptr_ = mmap(nullptr, shm_total_size, PROT_READ | PROT_WRITE, MAP_SHARED,
                   shm_fd_, 0);
   if (shm_ptr_ == MAP_FAILED) {
@@ -201,37 +212,45 @@ ShmStatus ShmManager::create_and_init(size_t shm_total_size,
     shm_ptr_ = nullptr;
     return ShmStatus::ShmMapFailed;
   }
+
   current_shm_size_.store(shm_total_size, std::memory_order_release);
   buffer_size_.store(buffer_size, std::memory_order_release);
+
   if (shm_newly_created) {
     auto *control = static_cast<ShmBufferControl *>(shm_ptr_);
-    control->initialize();
+    control->initialize(buffer_count, buffer_size, shm_ptr_);
     std::cout << "ShmManager '" << shm_name_
-              << "': Initialized buffer control structure." << std::endl;
+              << "': Initialized buffer control structure with " << buffer_count
+              << " buffers." << std::endl;
   }
+
   state_ = ShmState::Created;
   std::cout << "ShmManager '" << shm_name_
             << "' created and mapped successfully." << std::endl;
   return ShmStatus::Success;
 }
 
-ShmStatus ShmManager::open_and_map(size_t shm_total_size, size_t buffer_size) {
+ShmStatus ShmManager::open_and_map(size_t shm_total_size, size_t buffer_size,
+                                   uint32_t buffer_count) {
   std::lock_guard<std::mutex> lock(state_mutex_);
   if (state_ != ShmState::Uninitialized) {
     log_error("Shared memory already initialized",
               ShmStatus::AlreadyInitialized);
     return ShmStatus::AlreadyInitialized;
   }
+
   ShmStatus validation_result =
-      validate_buffer_layout(shm_total_size, buffer_size);
+      validate_buffer_layout(shm_total_size, buffer_size, buffer_count);
   if (validation_result != ShmStatus::Success) {
     return validation_result;
   }
+
   shm_fd_ = shm_open(shm_name_.c_str(), O_RDWR, 0666);
   if (shm_fd_ == -1) {
     log_error("Failed to open shared memory", ShmStatus::ShmOpenFailed);
     return ShmStatus::ShmOpenFailed;
   }
+
   shm_ptr_ = mmap(nullptr, shm_total_size, PROT_READ | PROT_WRITE, MAP_SHARED,
                   shm_fd_, 0);
   if (shm_ptr_ == MAP_FAILED) {
@@ -241,6 +260,7 @@ ShmStatus ShmManager::open_and_map(size_t shm_total_size, size_t buffer_size) {
     shm_ptr_ = nullptr;
     return ShmStatus::ShmMapFailed;
   }
+
   current_shm_size_.store(shm_total_size, std::memory_order_release);
   buffer_size_.store(buffer_size, std::memory_order_release);
   is_creator_ = false;
@@ -294,25 +314,26 @@ ReadBufferGuard ShmManager::acquire_read_buffer() {
 }
 
 // ========== 兼容性接口实现（内部使用零拷贝实现）==========
-ShmStatus ShmManager::write_and_switch(const void *data, size_t size, uint64_t frame_version) {
-  if (!data || size == 0) return ShmStatus::InvalidArguments;
-  
+ShmStatus ShmManager::write_and_switch(const void *data, size_t size,
+                                       uint64_t frame_version) {
+  if (!data || size == 0)
+    return ShmStatus::InvalidArguments;
+
   WriteBufferGuard guard = acquire_write_buffer(size);
   if (!guard.is_valid()) {
-      // 在单写者模型中，可以简单返回错误，而不是忙等
-      return ShmStatus::AcquireFailed;
+    // 在单写者模型中，可以简单返回错误，而不是忙等
+    return ShmStatus::AcquireFailed;
   }
-  
+
   std::memcpy(guard.get(), data, size);
-  
-  uint64_t current_timestamp = 
+
+  uint64_t current_timestamp =
       std::chrono::duration_cast<std::chrono::microseconds>(
-          std::chrono::system_clock::now().time_since_epoch()
-      ).count();
-      
+          std::chrono::system_clock::now().time_since_epoch())
+          .count();
+
   return guard.commit(size, frame_version, current_timestamp);
 }
-
 
 ShmStatus ShmManager::try_read_latest(void *data, size_t max_size,
                                       size_t *actual_size) {
@@ -355,31 +376,6 @@ void *ShmManager::get_shm_ptr() const {
                                                                      : nullptr;
 }
 
-ShmBufferControl *ShmManager::get_buffer_control() const {
-  std::lock_guard<std::mutex> lock(state_mutex_);
-  return (state_ == ShmState::Created || state_ == ShmState::Mapped)
-             ? static_cast<ShmBufferControl *>(shm_ptr_)
-             : nullptr;
-}
-
-void *ShmManager::get_data_buffer_nolock(uint32_t buffer_idx) const {
-  // 这个函数假设 state_mutex_ 已经被外部调用者锁住
-  if (state_ != ShmState::Created && state_ != ShmState::Mapped)
-    return nullptr;
-  if (buffer_idx >= NUM_BUFFERS)
-    return nullptr;
-
-  char *base = static_cast<char *>(shm_ptr_);
-  return base + sizeof(ShmBufferControl) +
-         buffer_idx * buffer_size_.load(std::memory_order_acquire);
-}
-
-// *** 修改旧的加锁版本，让它调用无锁版本 ***
-void *ShmManager::get_data_buffer(uint32_t buffer_idx) const {
-  std::lock_guard<std::mutex> lock(state_mutex_);
-  return get_data_buffer_nolock(buffer_idx);
-}
-
 size_t ShmManager::get_shm_size() const {
   return current_shm_size_.load(std::memory_order_acquire);
 }
@@ -398,14 +394,45 @@ bool ShmManager::is_initialized() const {
   return state_ == ShmState::Created || state_ == ShmState::Mapped;
 }
 
+ShmBufferControl *ShmManager::get_buffer_control() const {
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  return (state_ == ShmState::Created || state_ == ShmState::Mapped)
+             ? static_cast<ShmBufferControl *>(shm_ptr_)
+             : nullptr;
+}
+
+void *ShmManager::get_data_buffer(uint32_t buffer_idx) const {
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  return get_data_buffer_nolock(buffer_idx);
+}
+
+void *ShmManager::get_data_buffer_nolock(uint32_t buffer_idx) const {
+  // 这个函数假设 state_mutex_ 已经被外部调用者锁住
+  if (state_ != ShmState::Created && state_ != ShmState::Mapped)
+    return nullptr;
+
+  auto *control = static_cast<ShmBufferControl *>(shm_ptr_);
+  if (!control)
+    return nullptr;
+
+  uint32_t buffer_count = control->buffer_count.load(std::memory_order_acquire);
+  if (buffer_idx >= buffer_count)
+    return nullptr;
+
+  char *base = static_cast<char *>(shm_ptr_);
+  size_t data_offset = ShmBufferControl::get_data_buffers_offset(buffer_count);
+  return base + data_offset +
+         buffer_idx * buffer_size_.load(std::memory_order_acquire);
+}
+
 uint64_t ShmManager::get_frame_version(uint32_t buffer_idx) const {
   std::lock_guard<std::mutex> lock(state_mutex_);
   if (state_ != ShmState::Created && state_ != ShmState::Mapped)
     return 0;
   auto *control = static_cast<ShmBufferControl *>(shm_ptr_);
-  if (!control || buffer_idx >= NUM_BUFFERS)
+  if (!control)
     return 0;
-  return control->frame_version[buffer_idx].load(std::memory_order_acquire);
+  return control->get_frame_version(buffer_idx, shm_ptr_);
 }
 
 // ========== 内部零拷贝实现方法 ==========
@@ -421,13 +448,18 @@ void *ShmManager::internal_acquire_write_buffer(size_t expected_size,
   if (!control)
     return nullptr;
 
+  uint32_t buffer_count = control->buffer_count.load(std::memory_order_acquire);
+  auto *buffer_reader_count = control->get_buffer_reader_count_array(shm_ptr_);
+  auto *frame_version = control->get_frame_version_array(shm_ptr_);
+  auto *buffer_ready = control->get_buffer_ready_array(shm_ptr_);
+
   uint32_t write_idx = -1;
   uint64_t min_version = 0;
 
-  for (uint32_t i = 0; i < NUM_BUFFERS; ++i) {
-    if (control->buffer_reader_count[i].load(std::memory_order_acquire) == 0) {
+  for (uint32_t i = 0; i < buffer_count; ++i) {
+    if (buffer_reader_count[i].load(std::memory_order_acquire) == 0) {
       uint64_t current_version =
-          control->frame_version[i].load(std::memory_order_acquire);
+          frame_version[i].load(std::memory_order_acquire);
       if (write_idx == (uint32_t)-1 || current_version < min_version) {
         min_version = current_version;
         write_idx = i;
@@ -438,9 +470,9 @@ void *ShmManager::internal_acquire_write_buffer(size_t expected_size,
   if (write_idx == (uint32_t)-1)
     return nullptr;
 
-  control->buffer_ready[write_idx].store(false, std::memory_order_release);
+  buffer_ready[write_idx].store(false, std::memory_order_release);
   *buffer_idx = write_idx;
-  return get_data_buffer_nolock(write_idx); // 确保你已经应用了_nolock修复
+  return get_data_buffer_nolock(write_idx);
 }
 
 const void *ShmManager::internal_acquire_read_buffer(size_t *data_size,
@@ -456,13 +488,20 @@ const void *ShmManager::internal_acquire_read_buffer(size_t *data_size,
     return nullptr;
   }
 
+  uint32_t buffer_count = control->buffer_count.load(std::memory_order_acquire);
+  auto *buffer_ready = control->get_buffer_ready_array(shm_ptr_);
+  auto *frame_version_array = control->get_frame_version_array(shm_ptr_);
+  auto *buffer_reader_count = control->get_buffer_reader_count_array(shm_ptr_);
+  auto *buffer_data_size = control->get_buffer_data_size_array(shm_ptr_);
+  auto *timestamp_us_array = control->get_timestamp_us_array(shm_ptr_);
+
   uint32_t latest_idx = -1;
   uint64_t max_version = 0;
 
-  for (uint32_t i = 0; i < NUM_BUFFERS; ++i) {
-    if (control->buffer_ready[i].load(std::memory_order_acquire)) {
+  for (uint32_t i = 0; i < buffer_count; ++i) {
+    if (buffer_ready[i].load(std::memory_order_acquire)) {
       uint64_t current_version =
-          control->frame_version[i].load(std::memory_order_acquire);
+          frame_version_array[i].load(std::memory_order_acquire);
       if (latest_idx == (uint32_t)-1 || current_version > max_version) {
         max_version = current_version;
         latest_idx = i;
@@ -475,23 +514,23 @@ const void *ShmManager::internal_acquire_read_buffer(size_t *data_size,
     return nullptr;
   }
 
-  control->buffer_reader_count[latest_idx].fetch_add(1,
-                                                     std::memory_order_acquire);
+  buffer_reader_count[latest_idx].fetch_add(1, std::memory_order_acquire);
   *buffer_idx = latest_idx;
-  *data_size =
-      control->buffer_data_size[latest_idx].load(std::memory_order_acquire);
+  *data_size = buffer_data_size[latest_idx].load(std::memory_order_acquire);
   *timestamp_us =
-      control->timestamp_us[latest_idx].load(std::memory_order_acquire);
+      timestamp_us_array[latest_idx].load(std::memory_order_acquire);
   *frame_version = max_version;
 
-  return get_data_buffer_nolock(latest_idx); // 确保你已经应用了_nolock修复
+  return get_data_buffer_nolock(latest_idx);
 }
+
 void ShmManager::internal_release_write_buffer(uint32_t buffer_idx) {
   std::lock_guard<std::mutex> lock(state_mutex_);
   if (state_ != ShmState::Created && state_ != ShmState::Mapped)
     return;
   auto *control = static_cast<ShmBufferControl *>(shm_ptr_);
-  if (control && buffer_idx < NUM_BUFFERS) {
+  uint32_t buffer_count = control->buffer_count.load(std::memory_order_acquire);
+  if (control && buffer_idx < buffer_count) {
     // 在单写者模型中，此函数体可以为空
   }
 }
@@ -505,16 +544,23 @@ ShmStatus ShmManager::internal_commit_write_buffer(uint32_t buffer_idx,
     return ShmStatus::NotInitialized;
 
   auto *control = static_cast<ShmBufferControl *>(shm_ptr_);
-  if (!control || buffer_idx >= NUM_BUFFERS)
+  if (!control)
     return ShmStatus::InvalidArguments;
 
-  control->buffer_data_size[buffer_idx].store(actual_size,
-                                              std::memory_order_release);
-  control->timestamp_us[buffer_idx].store(timestamp_us,
-                                          std::memory_order_release);
-  control->frame_version[buffer_idx].store(frame_version,
-                                           std::memory_order_release);
-  control->buffer_ready[buffer_idx].store(true, std::memory_order_release);
+  uint32_t buffer_count = control->buffer_count.load(std::memory_order_acquire);
+  if (buffer_idx >= buffer_count)
+    return ShmStatus::InvalidArguments;
+
+  auto *buffer_data_size = control->get_buffer_data_size_array(shm_ptr_);
+  auto *timestamp_us_array = control->get_timestamp_us_array(shm_ptr_);
+  auto *frame_version_array = control->get_frame_version_array(shm_ptr_);
+  auto *buffer_ready = control->get_buffer_ready_array(shm_ptr_);
+
+  buffer_data_size[buffer_idx].store(actual_size, std::memory_order_release);
+  timestamp_us_array[buffer_idx].store(timestamp_us, std::memory_order_release);
+  frame_version_array[buffer_idx].store(frame_version,
+                                        std::memory_order_release);
+  buffer_ready[buffer_idx].store(true, std::memory_order_release);
 
   return ShmStatus::Success;
 }
@@ -524,9 +570,14 @@ void ShmManager::internal_release_read_buffer(uint32_t buffer_idx) {
   if (state_ != ShmState::Created && state_ != ShmState::Mapped)
     return;
   auto *control = static_cast<ShmBufferControl *>(shm_ptr_);
-  if (control && buffer_idx < NUM_BUFFERS) {
-    control->buffer_reader_count[buffer_idx].fetch_sub(
-        1, std::memory_order_release);
+  if (!control)
+    return;
+
+  uint32_t buffer_count = control->buffer_count.load(std::memory_order_acquire);
+  if (buffer_idx < buffer_count) {
+    auto *buffer_reader_count =
+        control->get_buffer_reader_count_array(shm_ptr_);
+    buffer_reader_count[buffer_idx].fetch_sub(1, std::memory_order_release);
   }
 }
 
@@ -554,19 +605,21 @@ void destroy_shm_manager(void *manager_ptr) {
 }
 
 int shm_manager_create_and_init(void *manager_ptr, size_t shm_total_size,
-                                size_t buffer_size) {
+                                size_t buffer_size, uint32_t buffer_count) {
   if (!manager_ptr)
     return static_cast<int>(ShmStatus::InvalidArguments);
-  return static_cast<int>(static_cast<ShmManager *>(manager_ptr)
-                              ->create_and_init(shm_total_size, buffer_size));
+  return static_cast<int>(
+      static_cast<ShmManager *>(manager_ptr)
+          ->create_and_init(shm_total_size, buffer_size, buffer_count));
 }
 
 int shm_manager_open_and_map(void *manager_ptr, size_t shm_total_size,
-                             size_t buffer_size) {
+                             size_t buffer_size, uint32_t buffer_count) {
   if (!manager_ptr)
     return static_cast<int>(ShmStatus::InvalidArguments);
-  return static_cast<int>(static_cast<ShmManager *>(manager_ptr)
-                              ->open_and_map(shm_total_size, buffer_size));
+  return static_cast<int>(
+      static_cast<ShmManager *>(manager_ptr)
+          ->open_and_map(shm_total_size, buffer_size, buffer_count));
 }
 
 int shm_manager_unmap_and_close(void *manager_ptr) {
@@ -608,14 +661,15 @@ int shm_manager_commit_write_buffer(void *manager_ptr, void *buffer_ptr,
   auto it = write_guards.find(buffer_ptr);
   if (it == write_guards.end())
     return static_cast<int>(ShmStatus::InvalidArguments);
-  
+
   // 生成当前时间戳
-  uint64_t current_timestamp = 
+  uint64_t current_timestamp =
       std::chrono::duration_cast<std::chrono::microseconds>(
-          std::chrono::system_clock::now().time_since_epoch()
-      ).count();
-      
-  ShmStatus status = it->second->commit(actual_size, frame_version, current_timestamp);
+          std::chrono::system_clock::now().time_since_epoch())
+          .count();
+
+  ShmStatus status =
+      it->second->commit(actual_size, frame_version, current_timestamp);
   write_guards.erase(it); // Guard自动析构，完成提交
   return static_cast<int>(status);
 }

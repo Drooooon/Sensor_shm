@@ -47,12 +47,13 @@ int main() {
     // 3. 创建传输通道
     ImageShmManager shm_transport(shm_config.name);
     shm_transport.unlink_shm(); // 清理之前的共享内存
-    if (shm_transport.create_and_init(shm_config.total_size_bytes,
-                                      shm_config.buffer_size_bytes) !=
-        ShmStatus::Success) {
+    if (shm_transport.create_and_init(
+            shm_config.total_size_bytes, shm_config.buffer_size_bytes,
+            shm_config.buffer_count) != ShmStatus::Success) {
       throw std::runtime_error("Failed to initialize shared memory.");
     }
-    std::cout << "Producer: Shared memory initialized." << std::endl;
+    std::cout << "Producer: Shared memory initialized with "
+              << shm_config.buffer_count << " buffers." << std::endl;
 
     // 4. 启动捕获
     producer->start();

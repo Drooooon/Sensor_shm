@@ -1,3 +1,13 @@
+/**
+ * @file config_manager.cpp
+ * @brief 配置管理器实现文件
+ * @author SensorComm Team
+ * @date 2025-08-11
+ * @version 1.0
+ *
+ * 实现配置管理器的各项功能，包括JSON配置文件的解析、V4L2格式转换等
+ */
+
 #include "config_manager.h"
 #include <fstream>
 #include <iostream>
@@ -9,7 +19,17 @@ ConfigManager &ConfigManager::get_instance() {
   return instance;
 }
 
-// 辅助函数：将字符串转换为 V4L2 格式
+/**
+ * @brief 将字符串格式转换为 V4L2 像素格式常量
+ * @param format_str 格式字符串，如 "YUYV" 或 "MJPG"
+ * @return uint32_t 对应的 V4L2_PIX_FMT_* 常量值
+ * @throws std::runtime_error 当格式字符串不被支持时抛出异常
+ *
+ * 该函数维护一个静态映射表，将常见的格式字符串转换为V4L2系统识别的格式常量。
+ * 目前支持的格式包括：
+ * - "YUYV" -> V4L2_PIX_FMT_YUYV
+ * - "MJPG" -> V4L2_PIX_FMT_MJPEG
+ */
 static uint32_t string_to_v4l2_format(const std::string &format_str) {
   static const std::map<std::string, uint32_t> format_map = {
       {"YUYV", V4L2_PIX_FMT_YUYV}, {"MJPG", V4L2_PIX_FMT_MJPEG}};
@@ -55,6 +75,7 @@ void ConfigManager::load_shm_config(const std::string &path) {
   shm_config_.total_size_bytes = (size_t)cfg.at("total_size_mb") * 1024 * 1024;
   shm_config_.buffer_size_bytes =
       (size_t)cfg.at("buffer_size_mb") * 1024 * 1024;
+  shm_config_.buffer_count = cfg.at("buffer_count");
 
   shm_loaded_ = true;
   std::cout << "SHM config loaded from " << path << std::endl;

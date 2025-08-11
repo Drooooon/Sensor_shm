@@ -5,53 +5,32 @@
  * @date 2025-08-11
  * @version 1.0
  *
- * 该程序作为视频数据的生产者，从摄像头设备捕获视频帧，
- * 并通过共享内存将数据传输给消费者进程。使用GStreamer作为
- * 视频捕获后端，支持多种视频格式和设备。
+ * 该程序作为视频数据的生产者，从V4L2摄像头设备捕获视频帧，
+ * 并通过共享内存将数据传输给消费者进程。使用我们重构的V4l2Capture
+ * 类提供高效、可靠的视频捕获服务。
  *
  * 主要功能：
+ * - 从配置文件加载共享内存和视频参数
+ * - 使用V4l2Capture类直接访问摄像头设备
  * - 初始化共享内存缓冲区
- * - 配置GStreamer视频捕获管道
  * - 连续捕获视频帧并写入共享内存
  * - 实时性能监控和日志输出
  * - 优雅的信号处理和资源清理
  */
 
+#include "config/config_manager.h"
+#include "config/factory.h"
+#include "formats/capture_interface.h"
 #include "image_shm_manager.h"
 #include <atomic>
 #include <chrono>
-#include <condition_variable>
 #include <csignal>
 #include <iomanip>
 #include <iostream>
-#include <mutex>
-#include <opencv2/opencv.hpp>
 #include <thread>
 
 /// 全局运行状态标志，用于优雅退出
 std::atomic<bool> g_running(true);
-
-/**
- * @brief 将OpenCV Mat类型转换为可读字符串
- * @param type OpenCV Mat类型常量
- * @return std::string 类型描述字符串
- *
- * 用于调试和日志输出，将数字类型常量转换为易读的字符串形式。
- */
-std::string mat_type_to_string(int type) {
-  switch (type) {
-  case CV_8UC1:
-    return "CV_8UC1";
-  case CV_8UC2:
-    return "CV_8UC2";
-  case CV_8UC3:
-    return "CV_8UC3";
-  case CV_8UC4:
-    return "CV_8UC4";
-  default:
-    return "Unknown(" + std::to_string(type) + ")";
-  }
-}
 
 /**
  * @brief 信号处理函数
@@ -67,19 +46,40 @@ void signal_handler(int signal) {
 }
 
 /**
+ * @brief 将V4L2像素格式转换为ImageFormat枚举
+ * @param pixel_format V4L2像素格式常量
+ * @return ImageFormat 对应的图像格式枚举
+ */
+ImageFormat v4l2_format_to_image_format(uint32_t pixel_format) {
+  if (pixel_format == 0x56595559) { // V4L2_PIX_FMT_YUYV 'YUYV' = 1448695129
+    return ImageFormat::YUYV;
+  } else if (pixel_format ==
+             0x47504a4d) { // V4L2_PIX_FMT_MJPEG 'MJPG' = 1196444237
+    return ImageFormat::MJPG;
+  } else {
+    std::cout << "Producer: Warning - Unknown pixel format: " << pixel_format
+              << ", defaulting to MJPG" << std::endl;
+    return ImageFormat::MJPG; // 默认使用MJPG
+  }
+}
+
+/**
  * @brief 主函数 - 视频生产者进程入口
  * @return int 程序退出码，0表示正常退出，非0表示异常退出
  *
  * 程序执行流程：
  * 1. 注册信号处理函数
- * 2. 初始化共享内存管理器
- * 3. 配置并打开GStreamer视频捕获管道
- * 4. 进入主循环：捕获帧 -> 写入共享内存 -> 更新统计
- * 5. 优雅清理资源并退出
+ * 2. 加载配置文件
+ * 3. 使用Factory创建V4L2捕获器
+ * 4. 初始化共享内存管理器
+ * 5. 启动V4L2捕获流
+ * 6. 进入主循环：捕获帧 -> 写入共享内存 -> 更新统计
+ * 7. 优雅清理资源并退出
  *
  * 技术特点：
- * - 使用32MB共享内存，3个10MB缓冲区
- * - GStreamer管道支持YUY2格式1280x720分辨率
+ * - 完全基于V4L2 API，避免GStreamer依赖
+ * - 从配置文件读取所有参数
+ * - 支持多种视频格式和分辨率
  * - 实时FPS监控，每2秒输出一次统计
  * - 异常情况自动重试和恢复
  */
@@ -87,72 +87,142 @@ int main() {
   std::signal(SIGINT, signal_handler);
   std::signal(SIGTERM, signal_handler);
 
-  std::cout << "=== Video Producer (Optimized Version) ===" << std::endl;
+  std::cout << "=== Video Producer (V4L2 Direct Version) ===" << std::endl;
 
-  ImageShmManager yuyv_shm("yuyv_shm");
-  yuyv_shm.unlink_shm();
-  if (yuyv_shm.create_and_init(32 * 1024 * 1024, 10 * 1024 * 1024, 3) !=
-      ShmStatus::Success) {
-    std::cerr << "FATAL: Failed to initialize shared memory." << std::endl;
-    return 1;
-  }
-  std::cout << "Producer: Shared memory initialized with 3 buffers."
-            << std::endl;
+  try {
+    // 1. 加载配置文件
+    ConfigManager::get_instance().load_video_config(
+        "../../../config/videoConfig.json");
+    ConfigManager::get_instance().load_shm_config(
+        "../../../config/shmConfig.json");
 
-  // 使用你已经验证成功的 /dev/video0
-  std::string pipeline = "v4l2src device=/dev/video0 ! "
-                         "video/x-raw,format=YUY2,width=1280,height=720 ! "
-                         "appsink drop=true sync=false";
-  cv::VideoCapture cap(pipeline, cv::CAP_GSTREAMER);
+    const auto &video_config = ConfigManager::get_instance().get_v4l2_config();
+    const auto &shm_config = ConfigManager::get_instance().get_shm_config();
 
-  if (!cap.isOpened()) {
-    std::cerr << "FATAL: Failed to open GStreamer pipeline." << std::endl;
-    return 1;
-  }
-  std::cout << "Producer: Camera pipeline opened successfully." << std::endl;
+    std::cout << "Producer: Loaded config - Device: "
+              << video_config.device_path
+              << ", Format: " << video_config.pixel_format_v4l2 << " (0x"
+              << std::hex << video_config.pixel_format_v4l2 << std::dec << ")"
+              << ", Resolution: " << video_config.width << "x"
+              << video_config.height << ", SHM: " << shm_config.name
+              << std::endl;
 
-  uint64_t frame_version = 1;
-  cv::Mat frame;
-  auto last_log_time = std::chrono::steady_clock::now();
-  uint64_t frames_since_log = 0;
-
-  while (g_running.load()) {
-    if (!cap.read(frame) || frame.empty()) {
-      std::cerr << "Producer: Warning - Failed to read frame." << std::endl;
-      std::this_thread::sleep_for(std::chrono::milliseconds(100));
-      continue;
+    // 2. 使用工厂创建V4L2捕获器
+    auto capture = Factory::create_capture(video_config);
+    if (!capture) {
+      std::cerr << "FATAL: Failed to create V4L2 capture device." << std::endl;
+      return 1;
     }
+    std::cout << "Producer: V4L2 capture device created successfully."
+              << std::endl;
 
-    ShmStatus status = yuyv_shm.write_image(
-        frame.data, frame.total() * frame.elemSize(), frame.cols, frame.rows,
-        frame.channels(), frame_version, ImageFormat::YUYV, frame.type());
+    // 3. 初始化共享内存
+    ImageShmManager shm_manager(shm_config.name);
+    shm_manager.unlink_shm(); // 清理之前的共享内存
 
-    if (status == ShmStatus::Success) {
-      frame_version++;
-      frames_since_log++;
+    size_t total_size = shm_config.total_size_bytes;
+    size_t buffer_size = shm_config.buffer_size_bytes;
+    int buffer_count = shm_config.buffer_count;
 
-      auto now = std::chrono::steady_clock::now();
-      if (std::chrono::duration_cast<std::chrono::seconds>(now - last_log_time)
-              .count() >= 2) {
-        double fps = frames_since_log / 2.0;
-        std::cout << "Producer: FPS: " << std::fixed << std::setprecision(1)
-                  << fps << " | Total Frames: " << frame_version - 1
+    if (shm_manager.create_and_init(total_size, buffer_size, buffer_count) !=
+        ShmStatus::Success) {
+      std::cerr << "FATAL: Failed to initialize shared memory '"
+                << shm_config.name << "'." << std::endl;
+      return 1;
+    }
+    std::cout << "Producer: Shared memory '" << shm_config.name
+              << "' initialized with " << buffer_count << " buffers."
+              << std::endl;
+
+    // 4. 启动V4L2捕获流
+    capture->start();
+    std::cout << "Producer: V4L2 capture stream started successfully."
+              << std::endl;
+
+    // 5. 主循环
+    uint64_t frame_version = 1;
+    auto last_log_time = std::chrono::steady_clock::now();
+    uint64_t frames_since_log = 0;
+    uint64_t total_frames = 0;
+    ImageFormat image_format =
+        v4l2_format_to_image_format(video_config.pixel_format_v4l2);
+
+    std::cout << "Producer: Starting capture loop with format "
+              << (int)image_format << " ("
+              << (image_format == ImageFormat::YUYV ? "YUYV" : "MJPG") << ")"
+              << std::endl;
+
+    CapturedFrame frame;
+    while (g_running.load()) {
+      // 从V4L2设备捕获一帧
+      bool capture_success = capture->capture(frame, g_running);
+
+      if (!capture_success) {
+        if (!g_running.load())
+          break; // 正常退出
+        std::cerr << "Producer: Warning - Failed to capture frame, retrying..."
                   << std::endl;
-        frames_since_log = 0;
-        last_log_time = now;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        continue;
       }
 
-    } else {
-      std::cerr << "Producer: Failed to write frame " << frame_version
-                << " to SHM" << std::endl;
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      // 检查帧数据有效性
+      if (!frame.data || frame.size == 0) {
+        std::cerr << "Producer: Warning - Invalid frame data, skipping..."
+                  << std::endl;
+        continue;
+      }
+
+      // 写入共享内存
+      ShmStatus status = shm_manager.write_image(
+          frame.data, frame.size, frame.width, frame.height,
+          (frame.format == ImageFormat::YUYV) ? 2 : 1, // YUYV=2通道，MJPG=1通道
+          frame_version, frame.format, frame.cv_type);
+
+      if (status == ShmStatus::Success) {
+        frame_version++;
+        frames_since_log++;
+        total_frames++;
+
+        // 性能统计输出
+        auto now = std::chrono::steady_clock::now();
+        if (std::chrono::duration_cast<std::chrono::seconds>(now -
+                                                             last_log_time)
+                .count() >= 2) {
+          double fps = frames_since_log / 2.0;
+          std::cout << "Producer: FPS: " << std::fixed << std::setprecision(1)
+                    << fps << " | Total Frames: " << total_frames
+                    << " | Format: " << (int)frame.format
+                    << " | Size: " << frame.size << " bytes" << std::endl;
+          frames_since_log = 0;
+          last_log_time = now;
+        }
+
+      } else {
+        std::cerr << "Producer: Failed to write frame " << frame_version
+                  << " to shared memory (Status: " << (int)status << ")"
+                  << std::endl;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      }
     }
+
+    // 6. 清理资源
+    std::cout << "\nProducer: Shutting down..." << std::endl;
+    capture->stop();
+    std::cout << "Producer: V4L2 capture stopped." << std::endl;
+
+    shm_manager.unmap_and_close();
+    std::cout << "Producer: Shared memory unmapped." << std::endl;
+
+    // 注意：不调用 unlink_shm()，让消费者进程继续访问数据
+    std::cout << "Producer: Exited cleanly after processing " << total_frames
+              << " frames." << std::endl;
+
+  } catch (const std::exception &e) {
+    std::cerr << "FATAL ERROR: " << e.what() << std::endl;
+    g_running.store(false);
+    return 1;
   }
 
-  std::cout << "\nProducer: Shutting down..." << std::endl;
-  cap.release();
-  yuyv_shm.unmap_and_close();
-  yuyv_shm.unlink_shm();
-  std::cout << "Producer: Exited cleanly." << std::endl;
   return 0;
 }

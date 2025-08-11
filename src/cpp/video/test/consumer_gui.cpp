@@ -28,6 +28,22 @@
 #include <thread>
 #include <vector>
 
+// 添加格式名称映射函数
+const char *getFormatName(ImageFormat format) {
+  switch (format) {
+  case ImageFormat::YUYV:
+    return "YUYV";
+  case ImageFormat::MJPG:
+    return "MJPG";
+  case ImageFormat::BGR:
+    return "BGR";
+  case ImageFormat::H264:
+    return "H264";
+  default:
+    return "UNKNOWN";
+  }
+}
+
 int main() {
   std::cout << "=== Video Consumer (Dynamic Factory Version) ===" << std::endl;
 
@@ -88,11 +104,37 @@ int main() {
           frame_version > last_processed_version) {
         last_processed_version = frame_version;
 
-        // 检测格式变化
+        // 检测格式变化并输出详细信息
         if (format != last_format) {
-          std::cout << "ConsumerGUI: Format changed from " << (int)last_format
-                    << " to " << (int)format << std::endl;
+          std::cout << "\n=== FORMAT CHANGE DETECTED ===" << std::endl;
+          std::cout << "ConsumerGUI: Format changed from "
+                    << getFormatName(last_format) << " (" << (int)last_format
+                    << ") to " << getFormatName(format) << " (" << (int)format
+                    << ")" << std::endl;
+          std::cout << "=== ACTUAL SHARED MEMORY FORMAT INFO ===" << std::endl;
+          std::cout << "  Format Name: " << getFormatName(format) << std::endl;
+          std::cout << "  Format Enum: " << (int)format << std::endl;
+          std::cout << "  Resolution: " << width << "x" << height << std::endl;
+          std::cout << "  Channels: " << channels << std::endl;
+          std::cout << "  Data Size: " << data_size << " bytes" << std::endl;
+          std::cout << "  Frame Type: " << (int)frame_type << std::endl;
+          std::cout << "  Frame Version: " << frame_version << std::endl;
+          std::cout << "  Timestamp: " << timestamp_us << " us" << std::endl;
+          std::cout << "================================" << std::endl;
           last_format = format;
+        }
+
+        // 每隔一定帧数输出当前格式信息
+        static int frame_count = 0;
+        frame_count++;
+        if (frame_count % 60 == 0) { // 每60帧输出一次
+          std::cout << "\n=== CURRENT SHARED MEMORY FORMAT ===" << std::endl;
+          std::cout << "  Current Format: " << getFormatName(format) << " ("
+                    << (int)format << ")" << std::endl;
+          std::cout << "  Resolution: " << width << "x" << height << std::endl;
+          std::cout << "  Data Size: " << data_size << " bytes" << std::endl;
+          std::cout << "  Channels: " << channels << std::endl;
+          std::cout << "================================" << std::endl;
         }
 
         // 4. 根据收到的 format 查找正确的解码器
@@ -108,13 +150,15 @@ int main() {
             cv::Mat bgr_frame = it->second->decode(buffer.data(), header);
 
             if (!bgr_frame.empty()) {
-              // 添加状态信息到图像
+              // 更新状态信息显示，包含实际格式名称
               std::string info_text =
-                  "Format: " + std::to_string((int)format) +
+                  "Format: " + std::string(getFormatName(format)) + " (" +
+                  std::to_string((int)format) + ")" +
                   " | FPS: " + std::to_string((int)display_fps) + " | " +
-                  std::to_string(width) + "x" + std::to_string(height);
+                  std::to_string(width) + "x" + std::to_string(height) +
+                  " | Size: " + std::to_string(data_size) + "B";
               cv::putText(bgr_frame, info_text, cv::Point(10, 30),
-                          cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 255, 0),
+                          cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(0, 255, 0),
                           2);
 
               cv::imshow(window_name, bgr_frame);
@@ -122,11 +166,13 @@ int main() {
             }
           } catch (const cv::Exception &e) {
             std::cerr << "ConsumerGUI: Decoding error for format "
-                      << (int)format << ": " << e.what() << std::endl;
+                      << getFormatName(format) << " (" << (int)format
+                      << "): " << e.what() << std::endl;
           }
         } else {
           std::cerr << "ConsumerGUI: No decoder found for format "
-                    << (int)format << std::endl;
+                    << getFormatName(format) << " (" << (int)format << ")"
+                    << std::endl;
         }
       }
 
@@ -139,7 +185,8 @@ int main() {
         display_fps = frames_processed * 1000.0 / elapsed_ms;
         std::cout << "ConsumerGUI: Display FPS: " << std::fixed
                   << std::setprecision(1) << display_fps
-                  << ", Format: " << (int)last_format << std::endl;
+                  << ", Format: " << getFormatName(last_format) << " ("
+                  << (int)last_format << ")" << std::endl;
         last_log_time = now;
         frames_processed = 0;
       }
